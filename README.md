@@ -1,4 +1,4 @@
-# CAD AI Lock — 商用自动化装修流水线
+# CAD AI Lock — 自动化装修流水线
 
 > 完整开源工作流说明见 **[WORKFLOW.md](./WORKFLOW.md)**（阶段、数据契约、Tour、Hillclimb、复现命令）。
 
@@ -24,7 +24,7 @@ python -m cad_ai_lock.cli tour --plan plan.json -o out/tour
 # 打开 out/tour/tour.html
 ```
 
-**商用主路径不接受手改 `plan.json`。** `--plan-override` 仅供运维兜底。
+**主路径不接受手改 `plan.json`。** `--plan-override` 仅供运维兜底。
 
 ## 两层锁定 + 自动修正
 
@@ -47,7 +47,7 @@ cp .env.example .env
 ## CLI
 
 ```bash
-# 商用一键（自动修正闭环）
+# 一键流水线（自动修正闭环）
 python -m cad_ai_lock.cli pipeline path/to/floorplan.png \
   -p "现代简约装修" --provider mock -w out/run --ocr
 
@@ -97,7 +97,7 @@ src/cad_ai_lock/
   render3d.py     mesh→depth/normal/seg/lineart（software；可选 Blender）
   tour.py         每房间相机 → ThreadPool 并行渲 → hotspots + tour.html
   ocr_utils.py    EasyOCR（可选）
-  pipeline.py     商用闭环编排
+  pipeline.py     闭环编排（先草稿再 hillclimb）
   layout.py       软布局
   control.py      多控制图
   generate.py     mock / replicate / fal / local
@@ -112,6 +112,18 @@ src/cad_ai_lock/
 - VR/透视静帧由 `CameraSpec` + 生成端一点透视 prompt 产出，不是全景 360。
 - 多房间漫游：`tour` 为每间房独立相机并行渲 beauty/depth，再按门邻接拼热点导航；非并发全景 VR。
 - 风水包默认关闭，不覆盖消防/通行常识。
+
+## 安全
+
+密钥只放本地 `.env`（参考 `.env.example`），详见 [SECURITY.md](./SECURITY.md)。`out/` 与 `.env` 均已 gitignore。
+
+从 monorepo 分支同步到独立仓库（本机已 `gh auth login`）：
+
+```bash
+# 先拉最新分支里的脚本，或直接：
+gh repo clone Mosquito1123/zenox /tmp/zenox -- -b cursor/cad-ai-lock-auto-pipeline-74b7 --depth 1
+bash /tmp/zenox/cad-ai-lock/scripts/sync-to-github.sh
+```
 
 ## License
 
