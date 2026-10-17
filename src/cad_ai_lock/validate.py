@@ -24,6 +24,7 @@ class ValidationResult:
     control_coverage: float
     passed: bool
     threshold: float
+    mean_deviation_px: float | None = None
     overlay_path: str | None = None
     message: str = ""
     policy_overall: float | None = None
@@ -36,6 +37,9 @@ class ValidationResult:
             "score": round(self.score, 4),
             "edge_overlap": round(self.edge_overlap, 4),
             "control_coverage": round(self.control_coverage, 4),
+            "mean_deviation_px": (
+                None if self.mean_deviation_px is None else round(self.mean_deviation_px, 3)
+            ),
             "passed": self.passed,
             "threshold": self.threshold,
             "overlay_path": self.overlay_path,
@@ -91,6 +95,7 @@ def validate_alignment(
             score=0.0,
             edge_overlap=0.0,
             control_coverage=0.0,
+            mean_deviation_px=None,
             passed=False,
             threshold=threshold,
             message="empty control edges",
@@ -107,8 +112,13 @@ def validate_alignment(
     edge_overlap = float(
         2 * control_coverage * precision / (control_coverage + precision + 1e-8)
     )
-    score = 0.65 * control_coverage + 0.35 * edge_overlap
-    passed = score >= threshold
+    # Chamfer: how far control wall pixels sit from the output edges.
+    free = np.where(gen_e > 0, 0, 255).astype(np.uint8)
+    chamfer = cv2.distanceTransform(free, cv2.DIST_L2, 3)
+    mean_deviation_px = float(chamfer[ctrl_e > 0].mean())
+    align = float(np.clip(1.0 - mean_deviation_px / 12.0, 0.0, 1.0))
+    score = 0.45 * control_coverage + 0.25 * edge_overlap + 0.30 * align
+    passed = score >= threshold and mean_deviation_px <= 8.0
 
     policy_overall = None
     policy_passed = None
@@ -143,6 +153,7 @@ def validate_alignment(
         score=score,
         edge_overlap=edge_overlap,
         control_coverage=control_coverage,
+        mean_deviation_px=mean_deviation_px,
         passed=passed,
         threshold=threshold,
         overlay_path=overlay_path,

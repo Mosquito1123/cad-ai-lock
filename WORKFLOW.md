@@ -1,7 +1,7 @@
 # CAD AI Lock — 开源工作流
 
 > 户型图 → 几何硬锁 → 先出草稿 → 分房间并行漫游 → 对照原图打分 → 不中断 hillclimb 修正  
-> 版本：`0.4.3` · License：MIT
+> 版本：`0.4.4` · License：MIT
 
 ## 一句话
 

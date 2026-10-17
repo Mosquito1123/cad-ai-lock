@@ -25,6 +25,7 @@ from cad_ai_lock.geometry import (
     OpeningType,
     Point2D,
     RoomPlan,
+    pixels_per_meter,
 )
 
 
@@ -61,10 +62,7 @@ class ViewContract:
 
 
 def _ppm(plan: RoomPlan) -> float:
-    if plan.scale_px_per_m and plan.scale_px_per_m > 0:
-        return float(plan.scale_px_per_m)
-    x0, y0, x1, y1 = plan.bounding_box()
-    return max(x1 - x0, y1 - y0, 1.0) / 10.0
+    return pixels_per_meter(plan)
 
 
 def _room_center(room: dict[str, Any]) -> tuple[float, float]:
@@ -119,62 +117,139 @@ def find_primary_view_target(plan: RoomPlan) -> tuple[float, float, str]:
     return ((x0 + x1) / 2, y1, "balcony")
 
 
-def place_living_camera(plan: RoomPlan) -> CameraSpec:
-    """Camera in living, looking toward balcony/window (one-point).
+def _room_box(room: dict[str, Any]) -> tuple[float, float, float, float]:
+    poly = room.get("polygon") or []
+    if len(poly) < 2:
+        cx, cy = _room_center(room)
+        return cx - 40.0, cy - 40.0, cx + 40.0, cy + 40.0
+    xs = [float(p["x"]) for p in poly]
+    ys = [float(p["y"]) for p in poly]
+    return min(xs), min(ys), max(xs), max(ys)
 
-    Prefers labeled living/balcony rooms; falls back to envelope heuristic
-    (eye in mid-south living band, look to southern exterior opening).
+
+def _opening_on_box(
+    op: Opening,
+    box: tuple[float, float, float, float],
+    margin: float = 28.0,
+) -> str | None:
+    """Which side of ``box`` the opening sits on, or None."""
+    mx = (op.start.x + op.end.x) / 2
+    my = (op.start.y + op.end.y) / 2
+    x0, y0, x1, y1 = box
+    near_s = abs(my - y1) <= margin and x0 - margin <= mx <= x1 + margin
+    near_n = abs(my - y0) <= margin and x0 - margin <= mx <= x1 + margin
+    near_w = abs(mx - x0) <= margin and y0 - margin <= my <= y1 + margin
+    near_e = abs(mx - x1) <= margin and y0 - margin <= my <= y1 + margin
+    # Prefer the closest side when a corner matches more than one.
+    dists = {
+        "s": abs(my - y1) if near_s else 1e9,
+        "n": abs(my - y0) if near_n else 1e9,
+        "w": abs(mx - x0) if near_w else 1e9,
+        "e": abs(mx - x1) if near_e else 1e9,
+    }
+    side, dist = min(dists.items(), key=lambda kv: kv[1])
+    if dist > margin:
+        return None
+    return side
+
+
+def place_living_camera(plan: RoomPlan) -> CameraSpec:
+    """One-point camera inside the living room, aimed at *that* room's far wall.
+
+    The look target is the center of the wall that holds this room's own
+    window or door. It does not reuse another room's window X (that used to
+    aim the camera diagonally through the partition, so walls fell outside
+    the control frame).
     """
-    living = find_living_room(plan)
-    tx, ty, kind = find_primary_view_target(plan)
     x0, y0, x1, y1 = plan.bounding_box()
-    if living:
-        cx, cy = _room_center(living)
-        # If "living" was mis-labeled as a huge balcony blob, fall back
-        if str(living.get("type")) == "balcony" or cy > (y0 + y1) * 0.72:
-            cx = (x0 + x1) / 2
-            cy = y0 + (y1 - y0) * 0.48
-            kind = "balcony"
-            tx, ty = (x0 + x1) / 2, y1 - 5
+    living = find_living_room(plan)
+    if living is not None and str(living.get("type")) != "balcony":
+        bx0, by0, bx1, by1 = _room_box(living)
+        area = max(0.0, (bx1 - bx0) * (by1 - by0))
+        env = max((x1 - x0) * (y1 - y0), 1.0)
+        if area > 0.7 * env and str(living.get("type")) != "living":
+            bx0, by0, bx1, by1 = x0, y0, x1, y1
     else:
-        cx = (x0 + x1) / 2
-        cy = y0 + (y1 - y0) * 0.48
-        tx, ty, kind = (x0 + x1) / 2, y1 - 5, "balcony"
-    # Ensure we look roughly south (+Y in image) for typical sales plans
-    if ty < cy:
-        ty = y1 - 5
-        kind = "balcony"
-    dx, dy = tx - cx, ty - cy
-    cx2 = cx - 0.12 * dx
-    cy2 = cy - 0.12 * dy
+        bx0, by0, bx1, by1 = x0, y0, x1, y1
+    cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+    box = (bx0, by0, bx1, by1)
+
+    ranked: list[tuple[int, float, Opening, str]] = []
+    for op in plan.openings:
+        side = _opening_on_box(op, box)
+        if side is None:
+            continue
+        priority = 0 if op.type in (OpeningType.WINDOW, OpeningType.OPENING) else 1
+        ranked.append((priority, -op.length_px, op, side))
+    ranked.sort(key=lambda t: (t[0], t[1]))
+
+    if ranked:
+        _pri, _neg, chosen, side = ranked[0]
+        kind = "window" if chosen.type != OpeningType.DOOR else "door"
+        if side == "s":
+            tx, ty = cx, by1
+        elif side == "n":
+            tx, ty = cx, by0
+        elif side == "e":
+            tx, ty = bx1, cy
+        else:
+            tx, ty = bx0, cy
+    else:
+        tx, ty = cx, by1
+        kind = "south"
+
+    vx, vy = tx - cx, ty - cy
+    norm = math.hypot(vx, vy) or 1.0
+    vx, vy = vx / norm, vy / norm
+    span = min(bx1 - bx0, by1 - by0)
+    back = max(24.0, span * 0.28)
+    eye_x = cx - vx * back
+    eye_y = cy - vy * back
+    margin = max(12.0, span * 0.08)
+    eye_x = float(min(max(eye_x, bx0 + margin), bx1 - margin))
+    eye_y = float(min(max(eye_y, by0 + margin), by1 - margin))
     return CameraSpec(
         preset="living_one_point",
         vanishing_point=Point2D(x=float(tx), y=float(ty)),
         horizon_y=float(ty),
         camera_height_m=1.5,
         wall_height_m=2.8,
-        notes=f"living→{kind}; eye=({cx2:.1f},{cy2:.1f}) target=({tx:.1f},{ty:.1f})",
+        notes=(
+            f"living→{kind}; eye=({eye_x:.1f},{eye_y:.1f}) "
+            f"target=({float(tx):.1f},{float(ty):.1f})"
+        ),
     )
 
 
 def _basis_from_camera(
     cam_xy: tuple[float, float], target_xy: tuple[float, float]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return forward (plan), right (plan), up (world z)."""
-    fwd = np.array([target_xy[0] - cam_xy[0], target_xy[1] - cam_xy[1]], dtype=np.float64)
+    """Return forward (plan px), person's right (plan px), world up.
+
+    Image Y grows downward (south). A person facing south has their right
+    hand to the west (−X). The previous basis used +X as screen-right while
+    looking south, which mirrored east/west doors and walls.
+    Near-axis looks snap to the wall axes so one-point rooms stay square.
+    """
+    fwd = np.array(
+        [target_xy[0] - cam_xy[0], target_xy[1] - cam_xy[1]], dtype=np.float64
+    )
     n = np.linalg.norm(fwd) or 1.0
     fwd = fwd / n
-    right = np.array([fwd[1], -fwd[0]], dtype=np.float64)  # rotate 90° CW in image coords
-    # In image Y-down, for "look south (+Y)", right should be +X
-    # rotate so right = perpendicular
-    right = np.array([fwd[1], -fwd[0]])
-    # Prefer right pointing to increasing X when looking +Y
-    if abs(fwd[1]) >= abs(fwd[0]) and fwd[1] > 0:
-        right = np.array([1.0, 0.0])
-        fwd = np.array([0.0, 1.0])
-    elif abs(fwd[1]) >= abs(fwd[0]) and fwd[1] < 0:
-        right = np.array([-1.0, 0.0])
-        fwd = np.array([0.0, -1.0])
+    if abs(fwd[1]) >= abs(fwd[0]):
+        if fwd[1] >= 0:
+            fwd = np.array([0.0, 1.0])  # south
+            right = np.array([-1.0, 0.0])  # west
+        else:
+            fwd = np.array([0.0, -1.0])  # north
+            right = np.array([1.0, 0.0])  # east
+    else:
+        if fwd[0] >= 0:
+            fwd = np.array([1.0, 0.0])  # east
+            right = np.array([0.0, 1.0])  # south
+        else:
+            fwd = np.array([-1.0, 0.0])  # west
+            right = np.array([0.0, -1.0])  # north
     up = np.array([0.0, 0.0, 1.0])
     return fwd, right, up
 
@@ -325,9 +400,6 @@ def build_view_contract(
 
     left = _clamp_doors(left, 1)
     right_o = _clamp_doors(right_o, 1)
-    # If extract missed left door but living→balcony, keep typical 1 door on bedroom side
-    if far_wall == "balcony" and not left:
-        left = ["door"]
 
     furniture_hints: list[str] = []
     if layout:

@@ -78,6 +78,7 @@ class ImageProvider(ABC):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         ...
 
@@ -93,6 +94,7 @@ class ImageProvider(ABC):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         ...
 
@@ -110,6 +112,7 @@ class MockProvider(ImageProvider):
         source_bgr: np.ndarray | None,
         seed: int,
         mode: str,
+        layout: Any | None = None,
     ) -> np.ndarray:
         h, w = plan.image_height, plan.image_width
         rng = np.random.default_rng(seed)
@@ -134,17 +137,16 @@ class MockProvider(ImageProvider):
         out = base.copy()
         out[mask_lines] = structure[mask_lines]
 
-        # draw furniture placeholders (do NOT touch wall band)
-        for i in range(3):
-            x = int(80 + (seed + i * 97) % max(1, w - 160))
-            y = int(80 + (seed // 3 + i * 53) % max(1, h - 160))
-            bw, bh = 50 + i * 10, 30 + i * 8
-            roi = out[y : y + bh, x : x + bw]
-            if roi.size:
-                # only paint where not on structure
-                patch = np.full_like(roi, (200 - i * 20, 180, 160 + i * 15))
-                local_mask = gray[y : y + bh, x : x + bw] == 0
-                roi[local_mask] = patch[local_mask]
+        # Furniture comes from the layout, in plan pixels. Random boxes used
+        # to land off the rooms and looked like the floor plan had shifted.
+        for it in getattr(layout, "items", None) or []:
+            rect = (
+                (float(it.center.x), float(it.center.y)),
+                (float(it.width_px), float(it.depth_px)),
+                float(it.rotation_deg),
+            )
+            box = cv2.boxPoints(rect).astype(np.int32)
+            cv2.polylines(out, [box], True, (40, 90, 200), 2, cv2.LINE_AA)
 
         pil = _bgr_to_pil(out)
         draw = ImageDraw.Draw(pil)
@@ -175,9 +177,10 @@ class MockProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         s = seed if seed is not None else _seed_from(prompts.prompt + "t2i")
-        return self._compose(prompts, control_canny, plan, None, s, "t2i")
+        return self._compose(prompts, control_canny, plan, None, s, "t2i", layout)
 
     def image_to_image(
         self,
@@ -190,9 +193,10 @@ class MockProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         s = seed if seed is not None else _seed_from(prompts.prompt + "i2i")
-        return self._compose(prompts, control_canny, plan, source_bgr, s, "i2i")
+        return self._compose(prompts, control_canny, plan, source_bgr, s, "i2i", layout)
 
 
 class ReplicateProvider(ImageProvider):
@@ -270,6 +274,7 @@ class ReplicateProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         # jagilley/controlnet-canny style inputs
         payload: dict[str, Any] = {
@@ -295,6 +300,7 @@ class ReplicateProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         payload: dict[str, Any] = {
             "image": _data_uri_png(control_canny),
@@ -357,6 +363,7 @@ class FalProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         payload: dict[str, Any] = {
             "prompt": prompts.prompt,
@@ -381,6 +388,7 @@ class FalProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         payload: dict[str, Any] = {
             "prompt": prompts.prompt,
@@ -447,6 +455,7 @@ class LocalDiffusersProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         pipe = self._get_pipe()
         control = _bgr_to_pil(
@@ -480,6 +489,7 @@ class LocalDiffusersProvider(ImageProvider):
         steps: int,
         guidance: float,
         seed: int | None,
+        layout: Any | None = None,
     ) -> np.ndarray:
         # Same ControlNet path; source informs prompt only in stub
         _ = source_bgr
@@ -491,6 +501,7 @@ class LocalDiffusersProvider(ImageProvider):
             steps=steps,
             guidance=guidance,
             seed=seed,
+            layout=layout,
         )
 
 
@@ -506,6 +517,34 @@ def get_provider(settings: Settings | None = None) -> ImageProvider:
     if name == ProviderName.LOCAL:
         return LocalDiffusersProvider(settings)
     raise ValueError(f"Unknown provider: {name}")
+
+
+def _fit_canvas(img: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Put an image on the plan canvas.
+
+    Control maps are authored at ``image_width × image_height``. A provider
+    that returns another size is scaled back onto that grid so walls are
+    compared in the same pixels. Matching aspect is a straight resize (the
+    inverse of a stretch). A very different aspect is uniformly fitted and
+    centered, which avoids shearing a square render across a wide plan.
+    """
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    ih, iw = img.shape[:2]
+    if ih == height and iw == width:
+        return img
+    src_aspect = iw / max(ih, 1)
+    dst_aspect = width / max(height, 1)
+    if abs(src_aspect - dst_aspect) <= 0.08 * dst_aspect:
+        return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+    scale = min(width / max(iw, 1), height / max(ih, 1))
+    nw, nh = max(1, int(round(iw * scale))), max(1, int(round(ih * scale)))
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    x0 = (width - nw) // 2
+    y0 = (height - nh) // 2
+    canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
+    return canvas
 
 
 def run_t2i(
@@ -528,6 +567,9 @@ def run_t2i(
     layout_obj: FurnitureLayout | None = layout  # type: ignore[assignment]
     prompts = build_prompts(user_prompt, plan, mode="t2i", layout=layout_obj)
     canny = control_canny if control_canny is not None else render_canny_from_plan(plan)
+    canny = _fit_canvas(canny, plan.image_width, plan.image_height)
+    if canny.ndim == 3:
+        canny = cv2.cvtColor(canny, cv2.COLOR_BGR2GRAY)
     img = provider.text_to_image(
         prompts,
         canny,
@@ -536,7 +578,9 @@ def run_t2i(
         steps=steps if steps is not None else settings.num_inference_steps,
         guidance=guidance if guidance is not None else settings.guidance_scale,
         seed=seed,
+        layout=layout_obj,
     )
+    img = _fit_canvas(img, plan.image_width, plan.image_height)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_path), img)
@@ -573,6 +617,10 @@ def run_i2i(
     if source is None:
         raise FileNotFoundError(source_path)
     canny = control_canny if control_canny is not None else render_canny_from_plan(plan)
+    canny = _fit_canvas(canny, plan.image_width, plan.image_height)
+    if canny.ndim == 3:
+        canny = cv2.cvtColor(canny, cv2.COLOR_BGR2GRAY)
+    source = _fit_canvas(source, plan.image_width, plan.image_height)
     img = provider.image_to_image(
         prompts,
         source,
@@ -582,7 +630,9 @@ def run_i2i(
         steps=steps if steps is not None else settings.num_inference_steps,
         guidance=guidance if guidance is not None else settings.guidance_scale,
         seed=seed,
+        layout=layout_obj,
     )
+    img = _fit_canvas(img, plan.image_width, plan.image_height)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_path), img)

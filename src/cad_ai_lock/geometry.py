@@ -181,3 +181,20 @@ class RoomPlan(BaseModel):
         if not xs:
             return (0.0, 0.0, float(self.image_width), float(self.image_height))
         return (min(xs), min(ys), max(xs), max(ys))
+
+
+# When a plan has no measured scale, every stage must assume the same
+# long-side length. Layout, perspective and extrusion used to fall back to
+# 8 m / 10 m / 12 m independently, so furniture, perspective and the mesh
+# disagreed about how big a pixel was.
+DEFAULT_LONG_SIDE_M = 12.0
+
+
+def pixels_per_meter(
+    plan: RoomPlan, fallback_long_side_m: float = DEFAULT_LONG_SIDE_M
+) -> float:
+    """Pixels per meter. Uses ``scale_px_per_m`` when set, else one shared fallback."""
+    if plan.scale_px_per_m and plan.scale_px_per_m > 0:
+        return float(plan.scale_px_per_m)
+    x0, y0, x1, y1 = plan.bounding_box()
+    return max(x1 - x0, y1 - y0, 1.0) / float(fallback_long_side_m)

@@ -123,11 +123,19 @@ def _look_at(eye: np.ndarray, target: np.ndarray, up: np.ndarray | None = None):
     up = np.array([0.0, 0.0, 1.0]) if up is None else up
     f = target - eye
     f = f / (np.linalg.norm(f) or 1.0)
-    s = np.cross(f, up)
+    # Person's right, not cross(forward, up). In a Z-up world where +Y is
+    # south, facing south must put west (−X) on screen-right; the opposite
+    # cross mirrored every perspective view.
+    s = np.cross(up, f)
     if np.linalg.norm(s) < 1e-6:
-        s = np.cross(f, np.array([0.0, 1.0, 0.0]))
+        s = np.cross(np.array([0.0, 1.0, 0.0]), f)
     s = s / (np.linalg.norm(s) or 1.0)
-    u = np.cross(s, f)
+    u = np.cross(f, s)
+    # Keep camera Y pointing up. cross(f, s) is up when s is the person's right
+    # and f is forward in a right-handed Z-up frame.
+    if u[2] < 0:
+        u = -u
+        s = -s
     # world → camera: x right, y up, z forward
     R = np.stack([s, u, f], axis=0)
     return R
@@ -473,26 +481,66 @@ def render_controls_blender(
     return soft
 
 
+def _topdown_eye_and_basis(
+    scene: Scene3D,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Nadir camera whose screen matches plan pixels: +X right, +Y down."""
+    V, _, _, _ = scene.merged_arrays()
+    if len(V) == 0:
+        eye = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        span = 1.0
+    else:
+        cx = float((V[:, 0].min() + V[:, 0].max()) / 2)
+        cy = float((V[:, 1].min() + V[:, 1].max()) / 2)
+        span = float(max(float(np.ptp(V[:, 0])), float(np.ptp(V[:, 1])), 1.0))
+        eye = np.array([cx, cy, span * 1.4], dtype=np.float64)
+    # camera x = world +X (east → screen right)
+    # camera y = world −Y (north → screen up; image +Y stays down)
+    # camera z = world −Z (looking down)
+    R = np.stack(
+        [
+            np.array([1.0, 0.0, 0.0]),
+            np.array([0.0, -1.0, 0.0]),
+            np.array([0.0, 0.0, -1.0]),
+        ],
+        axis=0,
+    )
+    return eye, R, span if len(V) else 1.0
+
+
+def project_topdown_points(
+    scene: Scene3D,
+    points_px: np.ndarray,
+    *,
+    size: int = 768,
+    fov_deg: float = 50.0,
+) -> np.ndarray:
+    """Project plan pixels to the top-down QA canvas. North (small y) is up."""
+    pts = np.asarray(points_px, dtype=np.float64).reshape(-1, 2)
+    ox, oy = scene.origin_px
+    ppm = scene.scale_px_per_m or 1.0
+    world = np.column_stack(
+        [
+            (pts[:, 0] - ox) / ppm,
+            (pts[:, 1] - oy) / ppm,
+            np.zeros(len(pts)),
+        ]
+    ).astype(np.float32)
+    eye, R, _span = _topdown_eye_and_basis(scene)
+    screen, _depth = _project_vertices(
+        world, eye, R, width=size, height=size, fov_deg=fov_deg
+    )
+    return screen
+
+
 def render_topdown_qa(
     scene: Scene3D, *, size: int = 768
 ) -> np.ndarray:
-    """Orthographic-ish top-down QA preview (Z-up look-down)."""
+    """Top-down QA preview aligned with the plan image (north up, east right)."""
     V, F, face_ids, kind_names = scene.merged_arrays()
     if len(V) == 0:
         return np.zeros((size, size, 3), dtype=np.uint8)
-    cx = float((V[:, 0].min() + V[:, 0].max()) / 2)
-    cy = float((V[:, 1].min() + V[:, 1].max()) / 2)
-    span = float(max(float(np.ptp(V[:, 0])), float(np.ptp(V[:, 1])), 1.0))
-    eye = np.array([cx, cy, span * 1.4], dtype=np.float64)
-    target = np.array([cx, cy, 0.0], dtype=np.float64)
-    # look down -Z with +Y as up in screen
-    f = target - eye
-    f = f / (np.linalg.norm(f) or 1.0)
-    approx_up = np.array([0.0, 1.0, 0.0])
-    s = np.cross(f, approx_up)
-    s = s / (np.linalg.norm(s) or 1.0)
-    u = np.cross(s, f)
-    R = np.stack([s, u, f], axis=0)
+    eye, R, _span = _topdown_eye_and_basis(scene)
     maps = _rasterize(
         V, F, face_ids, kind_names, eye, R, width=size, height=size, fov_deg=50.0
     )

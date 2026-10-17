@@ -15,6 +15,7 @@ from cad_ai_lock.geometry import (
     OpeningType,
     Point2D,
     RoomPlan,
+    pixels_per_meter,
 )
 from cad_ai_lock.policies_loader import load_packs, resolve_packs
 
@@ -72,12 +73,7 @@ def _doors(plan: RoomPlan) -> list[tuple[float, float]]:
 
 
 def _px_per_m(plan: RoomPlan) -> float:
-    if plan.scale_px_per_m:
-        return float(plan.scale_px_per_m)
-    # fallback: assume plan bbox ≈ 8m on longer side
-    x0, y0, x1, y1 = plan.bounding_box()
-    span = max(x1 - x0, y1 - y0, 1.0)
-    return span / 8.0
+    return pixels_per_meter(plan)
 
 
 def _rotation_toward(center: Point2D, target: tuple[float, float] | None) -> float:

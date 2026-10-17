@@ -281,6 +281,83 @@ def mark_exterior(plan: RoomPlan) -> RoomPlan:
     return plan
 
 
+def _bridge_free_ends(wall_mask: np.ndarray, walls: list[Wall], max_gap: int) -> None:
+    """Seal short extensions of a wall onto the next wall, for room splits only.
+
+    A partition that stops at a doorway still separates two rooms in the plan
+    drawing. Leaving that gap open makes flood-fill merge the rooms, so the
+    layout outline no longer matches the floor plan. The seal is not a new wall.
+    """
+    h, w = wall_mask.shape[:2]
+    for wall in walls:
+        dx = wall.end.x - wall.start.x
+        dy = wall.end.y - wall.start.y
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        for origin, direction in (
+            (wall.start, (-ux, -uy)),
+            (wall.end, (ux, uy)),
+        ):
+            hit: tuple[int, int] | None = None
+            for t in range(6, max_gap + 1):
+                x = int(round(origin.x + direction[0] * t))
+                y = int(round(origin.y + direction[1] * t))
+                if x < 0 or y < 0 or x >= w or y >= h:
+                    break
+                if wall_mask[y, x] > 0:
+                    hit = (x, y)
+                    break
+            if hit is not None:
+                cv2.line(
+                    wall_mask,
+                    origin.as_int_tuple(),
+                    hit,
+                    255,
+                    max(4, int(round(wall.thickness_px))),
+                )
+
+
+def _snap_axis(v: float, axes: list[float], tol: float = 14.0) -> float:
+    if not axes:
+        return float(v)
+    a = min(axes, key=lambda g: abs(g - v))
+    return float(a) if abs(a - v) <= tol else float(v)
+
+
+def _room_polygon(component: np.ndarray, walls: list[Wall]) -> list[dict[str, float]]:
+    """Contour of a room, snapped onto nearby wall centerlines."""
+    mask = component.astype(np.uint8) * 255
+    mask = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=1)
+    cnts, _hier = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return []
+    cnt = max(cnts, key=cv2.contourArea)
+    approx = cv2.approxPolyDP(cnt, 6.0, True).reshape(-1, 2)
+    if len(approx) < 3:
+        return []
+    vert_x: list[float] = []
+    hor_y: list[float] = []
+    for w in walls:
+        if abs(w.end.x - w.start.x) <= abs(w.end.y - w.start.y):
+            vert_x.append((w.start.x + w.end.x) / 2.0)
+        else:
+            hor_y.append((w.start.y + w.end.y) / 2.0)
+    pts: list[dict[str, float]] = []
+    for x, y in approx:
+        pts.append({"x": _snap_axis(float(x), vert_x), "y": _snap_axis(float(y), hor_y)})
+    cleaned: list[dict[str, float]] = []
+    for p in pts:
+        if not cleaned or abs(cleaned[-1]["x"] - p["x"]) > 1.5 or abs(cleaned[-1]["y"] - p["y"]) > 1.5:
+            cleaned.append(p)
+    if (
+        len(cleaned) >= 2
+        and abs(cleaned[0]["x"] - cleaned[-1]["x"]) <= 1.5
+        and abs(cleaned[0]["y"] - cleaned[-1]["y"]) <= 1.5
+    ):
+        cleaned.pop()
+    return cleaned if len(cleaned) >= 3 else []
+
+
 def infer_rooms(
     plan: RoomPlan,
     image_bgr: np.ndarray | None = None,
@@ -298,6 +375,7 @@ def infer_rooms(
             255,
             thickness,
         )
+    _bridge_free_ends(wall_mask, plan.walls, max_gap=max(48, int(0.22 * min(h, w))))
     ff = wall_mask.copy()
     cv2.floodFill(ff, None, (1, 1), 128)
     outside = ff == 128
@@ -345,23 +423,57 @@ def infer_rooms(
                 rtype, name = "foyer", "玄关"
             elif y < h * 0.28 and x < w * 0.5 and std < 16:
                 rtype, name = "kitchen", "厨房"
+        poly = _room_polygon(lab == i, plan.walls)
+        if len(poly) < 3:
+            poly = [
+                {"x": float(x), "y": float(y)},
+                {"x": float(x + ww), "y": float(y)},
+                {"x": float(x + ww), "y": float(y + hh)},
+                {"x": float(x), "y": float(y + hh)},
+            ]
         rooms.append(
             {
                 "id": f"{rtype}_{i}",
                 "name": name,
                 "type": rtype,
                 "area_px": area,
-                "polygon": [
-                    {"x": float(x), "y": float(y)},
-                    {"x": float(x + ww), "y": float(y)},
-                    {"x": float(x + ww), "y": float(y + hh)},
-                    {"x": float(x), "y": float(y + hh)},
-                ],
+                "polygon": poly,
                 "center": {"x": float(cents[i][0]), "y": float(cents[i][1])},
                 "mean_g": mean_g,
                 "std": std,
             }
         )
+    # Several large cells all match the "living" area heuristic. Keep the one
+    # that owns an exterior door as the living room; a sibling with a window
+    # is a bedroom. Otherwise every cell gets a sofa and the layout ignores
+    # the floor plan's room split.
+    livings = [r for r in rooms if r.get("type") == "living"]
+    if len(livings) > 1:
+
+        def _touches(room: dict[str, Any], kind: OpeningType) -> bool:
+            poly = room.get("polygon") or []
+            if len(poly) < 2:
+                return False
+            xs = [float(p["x"]) for p in poly]
+            ys = [float(p["y"]) for p in poly]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+            for op in plan.openings:
+                if op.type != kind:
+                    continue
+                mx = (op.start.x + op.end.x) / 2.0
+                my = (op.start.y + op.end.y) / 2.0
+                if x0 - 24 <= mx <= x1 + 24 and y0 - 24 <= my <= y1 + 24:
+                    return True
+            return False
+
+        primary = next((r for r in livings if _touches(r, OpeningType.DOOR)), livings[0])
+        for r in livings:
+            if r is primary:
+                continue
+            if _touches(r, OpeningType.WINDOW):
+                r["type"] = "bedroom"
+                r["name"] = "卧室"
+                r["id"] = "bedroom_" + str(r.get("id", "")).split("_")[-1]
     plan.rooms = rooms
     _log(plan, "infer_rooms", {"rooms": len(rooms)})
     return plan
@@ -547,8 +659,9 @@ def infer_openings(
             wall_id=door_wall.id,
         )
     )
-    # keep prior openings if denser
-    if len(plan.openings) >= len(openings):
+    # Real extracted openings stay. Synthesized windows-on-every-wall used to
+    # replace a correct door/window and shift them onto the wrong walls.
+    if plan.openings:
         attach_openings(plan)
         return plan
     plan.openings = openings
