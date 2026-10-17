@@ -6,94 +6,248 @@
   "scale_px_per_m": null,
   "walls": [
     {
-      "id": "wall_730ce9a8",
+      "id": "wall_86442810",
       "start": {
-        "x": 55.0,
-        "y": 416.0
+        "x": 60.0,
+        "y": 60.0
       },
       "end": {
-        "x": 584.0,
-        "y": 416.0
+        "x": 580.0,
+        "y": 60.0
       },
-      "thickness_px": 8.0,
-      "exterior": false
+      "thickness_px": 7.0,
+      "exterior": true
     },
     {
-      "id": "wall_54f4e9c4",
+      "id": "wall_32ea7abb",
       "start": {
-        "x": 55.0,
-        "y": 63.0
+        "x": 60.0,
+        "y": 420.0
       },
       "end": {
-        "x": 584.0,
-        "y": 63.0
+        "x": 580.0,
+        "y": 420.0
       },
-      "thickness_px": 8.0,
-      "exterior": false
+      "thickness_px": 7.0,
+      "exterior": true
     },
     {
-      "id": "wall_3378e3f8",
+      "id": "wall_998e2618",
       "start": {
-        "x": 575.0,
-        "y": 55.0
+        "x": 60.0,
+        "y": 60.0
       },
       "end": {
-        "x": 575.0,
-        "y": 425.0
+        "x": 60.0,
+        "y": 420.0
       },
-      "thickness_px": 8.0,
-      "exterior": false
+      "thickness_px": 7.0,
+      "exterior": true
     },
     {
-      "id": "wall_897f19ff",
+      "id": "wall_3dac5431",
       "start": {
-        "x": 57.0,
-        "y": 58.0
+        "x": 320.0,
+        "y": 60.0
       },
       "end": {
-        "x": 57.0,
-        "y": 421.0
+        "x": 320.0,
+        "y": 340.0
       },
-      "thickness_px": 8.0,
-      "exterior": false
+      "thickness_px": 7.0,
+      "exterior": true
+    },
+    {
+      "id": "wall_3a17b8cd",
+      "start": {
+        "x": 580.0,
+        "y": 60.0
+      },
+      "end": {
+        "x": 580.0,
+        "y": 420.0
+      },
+      "thickness_px": 7.0,
+      "exterior": true
     }
   ],
   "openings": [
     {
-      "id": "open_d444fd06",
+      "id": "open_aa8324f7",
       "type": "window",
       "start": {
-        "x": 323.0,
-        "y": 65.0
+        "x": 379.6107899807322,
+        "y": 60.0
       },
       "end": {
-        "x": 323.0,
-        "y": 343.0
+        "x": 459.77263969171486,
+        "y": 60.0
       },
-      "wall_id": null,
+      "wall_id": "wall_86442810",
       "width_m": null,
       "swing": null
     },
     {
-      "id": "open_c6ef0ede",
+      "id": "open_59a5f1f8",
       "type": "door",
       "start": {
-        "x": 284.0,
-        "y": 25.0
+        "x": 205.27552986512524,
+        "y": 420.0
       },
       "end": {
-        "x": 59.0,
-        "y": 30.0
+        "x": 275.4181117533718,
+        "y": 420.0
       },
-      "wall_id": null,
+      "wall_id": "wall_32ea7abb",
       "width_m": null,
       "swing": null
     }
   ],
-  "rooms": [],
+  "rooms": [
+    {
+      "id": "living_1",
+      "name": "客厅",
+      "type": "living",
+      "area_px": 88101,
+      "polygon": [
+        {
+          "x": 60.0,
+          "y": 60.0
+        },
+        {
+          "x": 60.0,
+          "y": 420.0
+        },
+        {
+          "x": 320.0,
+          "y": 420.0
+        },
+        {
+          "x": 320.0,
+          "y": 60.0
+        }
+      ],
+      "center": {
+        "x": 190.0,
+        "y": 240.0
+      },
+      "mean_g": 245.00006810365377,
+      "std": 6.268295764923096
+    },
+    {
+      "id": "bedroom_2",
+      "name": "卧室",
+      "type": "bedroom",
+      "area_px": 88101,
+      "polygon": [
+        {
+          "x": 320.0,
+          "y": 60.0
+        },
+        {
+          "x": 320.0,
+          "y": 420.0
+        },
+        {
+          "x": 580.0,
+          "y": 420.0
+        },
+        {
+          "x": 580.0,
+          "y": 60.0
+        }
+      ],
+      "center": {
+        "x": 450.0,
+        "y": 240.0
+      },
+      "mean_g": 244.99996594817313,
+      "std": 6.249565601348877
+    }
+  ],
+  "policies": [],
+  "plan_revision": "auto-1",
+  "camera": null,
   "notes": null,
   "meta": {
-    "extractor": "opencv_hough",
-    "pdf_page": 0
+    "extractor": "wall_centerline",
+    "pdf_page": 0,
+    "auto_correct": true,
+    "repair_log": [
+      {
+        "action": "mark_exterior"
+      },
+      {
+        "action": "infer_rooms",
+        "rooms": 2
+      },
+      {
+        "action": "mark_exterior"
+      },
+      {
+        "action": "attach_openings"
+      }
+    ],
+    "last_health": {
+      "score": 0.97,
+      "passed": true,
+      "threshold": 0.62,
+      "issues": [
+        {
+          "code": "no_scale",
+          "severity": "warn",
+          "message": "缺少比例尺 scale_px_per_m",
+          "meta": {}
+        }
+      ],
+      "metrics": {
+        "walls": 5,
+        "openings": 2,
+        "rooms": 2,
+        "labeled_rooms": 2,
+        "ortho_ratio": 1.0,
+        "endpoint_clusters": 6,
+        "avg_endpoints_per_cluster": 1.6667,
+        "duplicate_pairs": 0,
+        "envelope_coverage": 0.6094,
+        "scale_px_per_m": null,
+        "plan_revision": "auto-1"
+      },
+      "suggested_repairs": [
+        "estimate_scale"
+      ]
+    },
+    "extract_health": {
+      "score": 0.97,
+      "passed": true,
+      "threshold": 0.62,
+      "issues": [
+        {
+          "code": "no_scale",
+          "severity": "warn",
+          "message": "缺少比例尺 scale_px_per_m",
+          "meta": {}
+        }
+      ],
+      "metrics": {
+        "walls": 5,
+        "openings": 2,
+        "rooms": 2,
+        "labeled_rooms": 2,
+        "ortho_ratio": 1.0,
+        "endpoint_clusters": 6,
+        "avg_endpoints_per_cluster": 1.6667,
+        "duplicate_pairs": 0,
+        "envelope_coverage": 0.6094,
+        "scale_px_per_m": null,
+        "plan_revision": "auto-1"
+      },
+      "suggested_repairs": [
+        "estimate_scale"
+      ]
+    },
+    "extract_repairs": [
+      "infer_rooms"
+    ]
   }
 }

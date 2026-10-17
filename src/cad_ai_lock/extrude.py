@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from cad_ai_lock.geometry import Opening, OpeningType, RoomPlan, Wall
+from cad_ai_lock.geometry import Opening, OpeningType, RoomPlan, Wall, pixels_per_meter
 
 
 @dataclass
@@ -125,17 +125,15 @@ class Scene3D:
 
 
 def _ppm(plan: RoomPlan) -> float:
-    if plan.scale_px_per_m and plan.scale_px_per_m > 0:
-        return float(plan.scale_px_per_m)
-    x0, y0, x1, y1 = plan.bounding_box()
-    # assume long side ≈ 12m for apartments if unknown
-    return max(x1 - x0, y1 - y0, 1.0) / 12.0
+    return pixels_per_meter(plan)
 
 
 def _px_to_m(
     x: float, y: float, origin: tuple[float, float], ppm: float
 ) -> tuple[float, float]:
-    # Plan Y-down → world Z-up, Y forward (south = +Y)
+    # Image Y grows downward. World is Z-up with +Y = south = image +Y
+    # (no Y flip here). Top-down renders must map +Y toward screen-down
+    # so the picture matches the plan; see render3d.project_topdown_points.
     return ((x - origin[0]) / ppm, (y - origin[1]) / ppm)
 
 
